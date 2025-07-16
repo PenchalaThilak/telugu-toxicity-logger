@@ -5,7 +5,7 @@ import os
 app = Flask(__name__)
 DB_PATH = "toxicity_logs.db"
 
-# ✅ Initialize SQLite DB
+# ✅ Initialize database
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -27,7 +27,7 @@ init_db()
 def home():
     return "✅ Toxicity Logger API on Render is Running!"
 
-# ✅ API to log prediction from Hugging Face
+# ✅ Log route (fixes the order of values)
 @app.route("/log", methods=["POST"])
 def log_comment():
     data = request.json
@@ -37,15 +37,20 @@ def log_comment():
         c.execute('''
             INSERT INTO comments (comment, transliterated, prediction, confidence)
             VALUES (?, ?, ?, ?)
-        ''', (data["comment"], data["transliterated"], data["prediction"], data["confidence"]))
+        ''', (
+            data["comment"],             # ✅ Raw user input (e.g., arrey pichi vedhava)
+            data["transliterated"],      # ✅ Translated Telugu (e.g., అర్రే పిచ్చి వెధవ)
+            data["prediction"],
+            data["confidence"]
+        ))
         conn.commit()
         conn.close()
         return jsonify({"message": "Logged ✅"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ✅ View logs in HTML table
-@app.route("/logs", methods=["GET"])
+# ✅ View table
+@app.route("/logs")
 def view_logs():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -68,11 +73,11 @@ def view_logs():
         </tr>
         {% endfor %}
     </table>
-    <br><a href="/add">➕ Add New Entry</a> | <a href="/download_csv">⬇️ Download as CSV</a>
+    <br><a href="/add">➕ Add New Entry</a> | <a href="/download_csv">⬇️ Download CSV</a>
     """
     return render_template_string(html, rows=rows)
 
-# ✅ Add entry manually from browser
+# ✅ Add manual entry
 @app.route("/add", methods=["GET", "POST"])
 def add_record():
     if request.method == "POST":
@@ -108,7 +113,7 @@ def add_record():
     """
     return render_template_string(html)
 
-# ✅ Delete log by ID
+# ✅ Delete record
 @app.route("/delete/<int:log_id>")
 def delete_record(log_id):
     conn = sqlite3.connect(DB_PATH)
@@ -118,7 +123,7 @@ def delete_record(log_id):
     conn.close()
     return redirect("/logs")
 
-# ✅ CSV download
+# ✅ Download logs as CSV
 @app.route("/download_csv")
 def download_csv():
     conn = sqlite3.connect(DB_PATH)
