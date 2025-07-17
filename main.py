@@ -1,193 +1,153 @@
-from flask import Flask, request, jsonify, render_template_string, redirect, Response, send_file
-from functools import wraps
-from datetime import datetime
-import sqlite3
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, send_file
+import mysql.connector
 import os
+from datetime import datetime
+import csv
+from io import StringIO
 
 app = Flask(__name__)
-DB_PATH = "toxicity_logs.db"
 
-# 🔐 Admin Credentials
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "1234"  
+# MySQL DB connection (values from Render env)
+db_config = {
+    'host': os.environ.get('MYSQL_HOST'),
+    'port': int(os.environ.get('MYSQL_PORT', 3306)),
+    'user': os.environ.get('MYSQL_USER'),
+    'password': os.environ.get('MYSQL_PASSWORD'),
+    'database': os.environ.get('MYSQL_DATABASE')
+}
 
-# 🔐 Auth Decorators
-def check_auth(username, password):
-    return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
-
-def authenticate():
-    return Response("Unauthorized", 401, {"WWW-Authenticate": 'Basic realm="Login Required"'})
-
-def requires_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
-        return f(*args, **kwargs)
-    return decorated
-
-# ✅ Initialize DB with timestamp
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS comments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+# Ensure table exists
+def create_table():
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS toxicity_logs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
             comment TEXT,
-            transliterated TEXT,
-            prediction TEXT,
-            confidence REAL,
-            timestamp TEXT
+            translated TEXT,
+            prediction VARCHAR(20),
+            confidence FLOAT,
+            timestamp DATETIME
         )
-    ''')
+    """)
     conn.commit()
     conn.close()
 
-init_db()
+create_table()
 
-@app.route("/")
-def home():
-    return "✅ Toxicity Logger API on Render is Running!"
-
-# ✅ Public log POST API for Hugging Face
-@app.route("/log", methods=["POST"])
-def log_comment():
+# API to receive data from Hugging Face
+@app.route('/add_log', methods=['POST'])
+def add_log():
     data = request.json
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO comments (comment, transliterated, prediction, confidence, timestamp)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (
-            data["comment"],
-            data["transliterated"],
-            data["prediction"],
-            data["confidence"],
-            timestamp
-        ))
-        conn.commit()
-        conn.close()
-        return jsonify({"message": "Logged ✅"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    comment = data.get("comment")
+    translated = data.get("translated")
+    prediction = data.get("prediction")
+    confidence = data.get("confidence")
+    timestamp = datetime.now()
 
-# ✅ View logs (HTML table)
-@app.route("/logs")
-@requires_auth
-def view_logs():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT * FROM comments")
-    rows = c.fetchall()
-    conn.close()
-
-    html = """
-    <h2>🧾 Telugu Toxicity Detection Logs</h2>
-    <table border="1" cellpadding="5">
-        <tr><th>ID</th><th>Comment</th><th>Translated Text</th><th>Prediction</th><th>Confidence (%)</th><th>Timestamp</th><th>Delete</th></tr>
-        {% for row in rows %}
-        <tr>
-            <td>{{ row[0] }}</td>
-            <td>{{ row[1] }}</td>
-            <td>{{ row[2] }}</td>
-            <td>{{ row[3] }}</td>
-            <td>{{ '%.2f'|format(row[4]) }}</td>
-            <td>{{ row[5] }}</td>
-            <td><a href="/delete/{{ row[0] }}">❌ Delete</a></td>
-        </tr>
-        {% endfor %}
-    </table>
-    <br><a href="/add">➕ Add New Entry</a> | 
-    <a href="/download_csv">⬇️ Download CSV</a> | 
-    <a href="/download_db">🗃️ Download DB</a>
-    """
-    return render_template_string(html, rows=rows)
-
-# ✅ Add manual log
-@app.route("/add", methods=["GET", "POST"])
-@requires_auth
-def add_record():
-    if request.method == "POST":
-        comment = request.form["comment"]
-        transliterated = request.form["transliterated"]
-        prediction = request.form["prediction"]
-        confidence = float(request.form["confidence"])
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO comments (comment, transliterated, prediction, confidence, timestamp)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (comment, transliterated, prediction, confidence, timestamp))
-        conn.commit()
-        conn.close()
-        return redirect("/logs")
-
-    html = """
-    <h3>➕ Add New Log Entry</h3>
-    <form method="post">
-        Comment: <input name="comment" required><br><br>
-        Transliterated: <input name="transliterated" required><br><br>
-        Prediction: 
-        <select name="prediction">
-            <option value="Toxic">Toxic</option>
-            <option value="Non-Toxic">Non-Toxic</option>
-        </select><br><br>
-        Confidence (%): <input name="confidence" type="number" step="0.01" required><br><br>
-        <button type="submit">Save</button>
-    </form>
-    <br><a href="/logs">🔙 Back to Logs</a>
-    """
-    return render_template_string(html)
-
-# ✅ Delete record
-@app.route("/delete/<int:log_id>")
-@requires_auth
-def delete_record(log_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM comments WHERE id = ?", (log_id,))
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO toxicity_logs (comment, translated, prediction, confidence, timestamp)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (comment, translated, prediction, confidence, timestamp))
     conn.commit()
     conn.close()
-    return redirect("/logs")
+    return jsonify({"status": "success"}), 200
 
-# ✅ Download CSV of logs
-@app.route("/download_csv")
-@requires_auth
-def download_csv():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT id, comment, transliterated, prediction, confidence, timestamp FROM comments")
-    rows = c.fetchall()
+# Admin dashboard with table and pie chart
+@app.route('/logs')
+def view_logs():
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM toxicity_logs ORDER BY id DESC")
+    rows = cursor.fetchall()
     conn.close()
 
-    csv_data = "ID,Comment,Transliterated,Prediction,Confidence (%),Timestamp\n"
-    for row in rows:
-        csv_data += f"{row[0]},\"{row[1]}\",\"{row[2]}\",{row[3]},{row[4]:.2f},{row[5]}\n"
+    # Count for pie chart
+    toxic = sum(1 for row in rows if row['prediction'] == 'Toxic')
+    nontoxic = sum(1 for row in rows if row['prediction'] == 'Non-Toxic')
 
-    return Response(
-        csv_data,
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment;filename=toxicity_logs.csv"}
+    html = """
+    <html>
+    <head>
+        <title>Toxicity Logs</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    </head>
+    <body>
+        <h2>Toxicity Logs (MySQL)</h2>
+        <a href="/download_csv">Download CSV</a>
+        <table border="1" cellspacing="0" cellpadding="5">
+            <tr><th>ID</th><th>Comment</th><th>Translated</th><th>Prediction</th><th>Confidence (%)</th><th>Timestamp</th><th>Delete</th></tr>
+            {% for row in rows %}
+            <tr>
+                <td>{{ row.id }}</td>
+                <td>{{ row.comment }}</td>
+                <td>{{ row.translated }}</td>
+                <td>{{ row.prediction }}</td>
+                <td>{{ "%.2f"|format(row.confidence) }}</td>
+                <td>{{ row.timestamp }}</td>
+                <td><a href="{{ url_for('delete_log', log_id=row.id) }}">Delete</a></td>
+            </tr>
+            {% endfor %}
+        </table>
+        <h3>Prediction Summary</h3>
+        <canvas id="chart" width="300" height="300"></canvas>
+        <script>
+        const ctx = document.getElementById('chart').getContext('2d');
+        new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: ['Toxic', 'Non-Toxic'],
+                datasets: [{
+                    label: 'Prediction Distribution',
+                    data: [{{ toxic }}, {{ nontoxic }}],
+                    backgroundColor: ['#e74c3c', '#2ecc71']
+                }]
+            }
+        });
+        </script>
+    </body>
+    </html>
+    """
+    return render_template_string(html, rows=rows, toxic=toxic, nontoxic=nontoxic)
+
+# Delete log
+@app.route('/delete/<int:log_id>')
+def delete_log(log_id):
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM toxicity_logs WHERE id = %s", (log_id,))
+    conn.commit()
+    conn.close()
+    return redirect(url_for('view_logs'))
+
+# Download CSV
+@app.route('/download_csv')
+def download_csv():
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM toxicity_logs ORDER BY id DESC")
+    rows = cursor.fetchall()
+    headers = [i[0] for i in cursor.description]
+    conn.close()
+
+    si = StringIO()
+    writer = csv.writer(si)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    output = si.getvalue()
+
+    return send_file(
+        StringIO(output),
+        mimetype='text/csv',
+        download_name='toxicity_logs.csv',
+        as_attachment=True
     )
 
-# ✅ Download full SQLite database file
-@app.route("/download_db")
-@requires_auth
-def download_db():
-    try:
-        return send_file(
-            DB_PATH,
-            as_attachment=True,
-            download_name="toxicity_logs.db"
-        )
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.route('/')
+def index():
+    return "✅ Telugu Toxicity Logger Flask API (MySQL Connected)"
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    app.run(debug=False, host='0.0.0.0', port=8000)
