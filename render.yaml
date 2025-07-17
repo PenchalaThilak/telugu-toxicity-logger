@@ -1,7 +1,18 @@
 services:
   - type: web
-    name: telugu-toxic-logger
+    name: telugu-toxicity-logger
     env: python
-    plan: free
+    region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
+    envVars:
+      - key: MYSQL_HOST
+        sync: false
+      - key: MYSQL_PORT
+        sync: false
+      - key: MYSQL_USER
+        sync: false
+      - key: MYSQL_PASSWORD
+        sync: false
+      - key: MYSQL_DATABASE
+        sync: false
