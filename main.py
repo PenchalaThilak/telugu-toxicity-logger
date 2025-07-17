@@ -5,9 +5,10 @@ import os
 from functools import wraps
 
 load_dotenv()
+
 app = Flask(__name__)
 
-# Connect to MySQL
+# Database connection
 db = mysql.connector.connect(
     host=os.getenv("MYSQL_HOST"),
     user=os.getenv("MYSQL_USER"),
@@ -17,7 +18,7 @@ db = mysql.connector.connect(
 )
 cursor = db.cursor()
 
-# Create table
+# Create table if not exists
 def create_table():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS toxicity_logs (
@@ -33,12 +34,12 @@ def create_table():
 
 create_table()
 
-# Admin Auth
+# Basic Auth for logs view
 def check_auth(username, password):
-    return username == os.getenv("ADMIN_USER") and password == os.getenv("ADMIN_PASS")
+    return username == os.getenv("ADMIN_USERNAME") and password == os.getenv("ADMIN_PASSWORD")
 
 def authenticate():
-    return Response("Login required", 401, {"WWW-Authenticate": 'Basic realm="Login Required"'})
+    return Response("Authentication required", 401, {"WWW-Authenticate": 'Basic realm="Login Required"'})
 
 def requires_auth(f):
     @wraps(f)
@@ -49,8 +50,8 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-# POST log API
-@app.route("/log", methods=["POST"])
+# API to receive logs
+@app.route('/log', methods=['POST'])
 def log_data():
     data = request.get_json()
     comment = data.get("comment")
@@ -58,18 +59,16 @@ def log_data():
     prediction = data.get("prediction")
     confidence = data.get("confidence")
 
-    try:
-        cursor.execute("""
-            INSERT INTO toxicity_logs (comment, transliterated, prediction, confidence)
-            VALUES (%s, %s, %s, %s)
-        """, (comment, transliterated, prediction, confidence))
-        db.commit()
-        return jsonify({"status": "success"}), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    cursor.execute("""
+        INSERT INTO toxicity_logs (comment, transliterated, prediction, confidence)
+        VALUES (%s, %s, %s, %s)
+    """, (comment, transliterated, prediction, confidence))
+    db.commit()
 
-# Admin Dashboard
-@app.route("/logs")
+    return jsonify({"status": "success"}), 200
+
+# Admin dashboard
+@app.route('/logs')
 @requires_auth
 def view_logs():
     cursor.execute("SELECT id, comment, transliterated, prediction, confidence, timestamp FROM toxicity_logs ORDER BY timestamp DESC")
@@ -103,7 +102,7 @@ def view_logs():
             </script>
             <table border="1" cellpadding="6" style="margin-top:20px; width:100%;">
                 <tr>
-                    <th>ID</th><th>Comment</th><th>Transliterated</th><th>Prediction</th><th>Confidence (%)</th><th>Timestamp</th>
+                    <th>ID</th><th>Comment</th><th>Translated Text</th><th>Prediction</th><th>Confidence (%)</th><th>Timestamp</th>
                 </tr>
                 {% for row in rows %}
                 <tr>
@@ -111,7 +110,7 @@ def view_logs():
                     <td>{{ row[1] }}</td>
                     <td>{{ row[2] }}</td>
                     <td>{{ row[3] }}</td>
-                    <td>{{ row[4] }}</td>
+                    <td>{{ "%.2f" | format(row[4]) }}</td>
                     <td>{{ row[5] }}</td>
                 </tr>
                 {% endfor %}
@@ -124,11 +123,9 @@ def view_logs():
     return render_template_string(html_template, rows=rows, labels=labels, counts=counts)
 
 # Health check
-@app.route("/")
+@app.route('/')
 def home():
     return "✅ Telugu Toxicity Logger Backend is Running!"
 
-# Run app on Render port
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
