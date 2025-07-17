@@ -53,19 +53,25 @@ def requires_auth(f):
 # API to receive logs
 @app.route('/log', methods=['POST'])
 def log_data():
-    data = request.get_json()
-    comment = data.get("comment")
-    transliterated = data.get("transliterated")
-    prediction = data.get("prediction")
-    confidence = data.get("confidence")
+    try:
+        data = request.get_json()
+        print("📥 Received JSON:", data)
 
-    cursor.execute("""
-        INSERT INTO toxicity_logs (comment, transliterated, prediction, confidence)
-        VALUES (%s, %s, %s, %s)
-    """, (comment, transliterated, prediction, confidence))
-    db.commit()
+        comment = data.get("comment")
+        transliterated = data.get("transliterated")
+        prediction = data.get("prediction")
+        confidence = data.get("confidence")
 
-    return jsonify({"status": "success"}), 200
+        cursor.execute("""
+            INSERT INTO toxicity_logs (comment, transliterated, prediction, confidence)
+            VALUES (%s, %s, %s, %s)
+        """, (comment, transliterated, prediction, confidence))
+        db.commit()
+
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        print("🚨 Error in /log:", str(e))
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # Admin dashboard
 @app.route('/logs')
@@ -110,7 +116,7 @@ def view_logs():
                     <td>{{ row[1] }}</td>
                     <td>{{ row[2] }}</td>
                     <td>{{ row[3] }}</td>
-                    <td>{{ row[4] }}</td>
+                    <td>{{ "%.2f"|format(row[4]) }}</td>
                     <td>{{ row[5] }}</td>
                 </tr>
                 {% endfor %}
