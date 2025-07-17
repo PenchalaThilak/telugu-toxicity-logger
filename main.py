@@ -1,24 +1,27 @@
-import os
-import mysql.connector
 from flask import Flask, request, jsonify, render_template_string, send_file, redirect
-from datetime import datetime
+import mysql.connector
+from io import StringIO
 import csv
-import io
+import os
+from datetime import datetime
+from functools import wraps
 
 app = Flask(__name__)
 
 # MySQL config from environment variables
 db_config = {
     "host": os.environ.get("MYSQL_HOST"),
+    "port": int(os.environ.get("MYSQL_PORT", 3306)),
     "user": os.environ.get("MYSQL_USER"),
     "password": os.environ.get("MYSQL_PASSWORD"),
-    "database": os.environ.get("MYSQL_DATABASE"),
-    "port": int(os.environ.get("MYSQL_PORT", 3306))
+    "database": os.environ.get("MYSQL_DATABASE")
 }
 
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+# Admin credentials
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "adminpass")
 
-# Create table if it doesn't exist
+
 def create_table():
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor()
@@ -29,7 +32,7 @@ def create_table():
             translated TEXT,
             prediction VARCHAR(20),
             confidence FLOAT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp DATETIME
         )
     """)
     conn.commit()
@@ -37,82 +40,123 @@ def create_table():
 
 create_table()
 
-# Save a new comment entry
-@app.route('/log', methods=['POST'])
+
+def check_auth(username, password):
+    return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
+
+def authenticate():
+    from flask import Response
+    return Response(
+        "You must login with proper credentials", 401,
+        {"WWW-Authenticate": 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        from flask import request
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+
+
+@app.route("/")
+def home():
+    return "Welcome to Telugu Toxicity Logger API!"
+
+
+@app.route("/log", methods=["POST"])
 def log_entry():
     data = request.json
     comment = data.get("comment")
     translated = data.get("translated")
     prediction = data.get("prediction")
     confidence = float(data.get("confidence", 0))
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO toxicity_logs (comment, translated, prediction, confidence)
-        VALUES (%s, %s, %s, %s)
-    """, (comment, translated, prediction, confidence))
+        INSERT INTO toxicity_logs (comment, translated, prediction, confidence, timestamp)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (comment, translated, prediction, confidence, timestamp))
     conn.commit()
     conn.close()
+
     return jsonify({"status": "success"}), 200
 
-# View logs (protected)
-@app.route('/logs', methods=['GET'])
-def view_logs():
-    password = request.args.get("password", "")
-    if password != ADMIN_PASSWORD:
-        return redirect("/unauthorized")
 
+@app.route("/logs", methods=["GET"])
+@requires_auth
+def show_logs():
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM toxicity_logs ORDER BY timestamp DESC")
+    cursor.execute("SELECT id, comment, translated, prediction, confidence, timestamp FROM toxicity_logs ORDER BY id DESC")
     rows = cursor.fetchall()
     conn.close()
 
-    html = """
-    <h2 style="text-align:center;">Telugu Toxicity Logs</h2>
-    <p style="text-align:center;"><a href='/download-csv?password={{password}}'>📥 Download as CSV</a></p>
-    <table border="1" style="width:100%;border-collapse:collapse;text-align:center;">
-    <tr><th>ID</th><th>Comment</th><th>Translated</th><th>Prediction</th><th>Confidence (%)</th><th>Timestamp</th></tr>
-    {% for row in rows %}
-    <tr>
-        <td>{{ row[0] }}</td>
-        <td>{{ row[1] }}</td>
-        <td>{{ row[2] }}</td>
-        <td>{{ row[3] }}</td>
-        <td>{{ "%.2f"|format(row[4]) }}</td>
-        <td>{{ row[5] }}</td>
-    </tr>
-    {% endfor %}
+    table_html = """
+    <h2>🧠 Telugu Toxicity Logs (Admin Panel)</h2>
+    <a href="/download_csv">⬇️ Download as CSV</a> |
+    <a href="/delete_all" onclick="return confirm('Are you sure you want to delete all logs?')">🗑️ Delete All</a>
+    <table border="1" cellspacing="0" cellpadding="5">
+        <tr>
+            <th>ID</th>
+            <th>Comment</th>
+            <th>Translated</th>
+            <th>Prediction</th>
+            <th>Confidence (%)</th>
+            <th>Timestamp</th>
+        </tr>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row[0] }}</td>
+            <td>{{ row[1] }}</td>
+            <td>{{ row[2] }}</td>
+            <td>{{ row[3] }}</td>
+            <td>{{ "%.2f"|format(row[4]) }}</td>
+            <td>{{ row[5] }}</td>
+        </tr>
+        {% endfor %}
     </table>
     """
-    return render_template_string(html, rows=rows, password=password)
+    return render_template_string(table_html, rows=rows)
 
-@app.route('/unauthorized')
-def unauthorized():
-    return "<h3>Unauthorized. Add ?password=yourpass to URL.</h3>"
 
-# Download CSV of logs
-@app.route('/download-csv')
+@app.route("/download_csv")
+@requires_auth
 def download_csv():
-    password = request.args.get("password", "")
-    if password != ADMIN_PASSWORD:
-        return redirect("/unauthorized")
-
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM toxicity_logs ORDER BY timestamp DESC")
+    cursor.execute("SELECT id, comment, translated, prediction, confidence, timestamp FROM toxicity_logs")
     rows = cursor.fetchall()
     conn.close()
 
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['ID', 'Comment', 'Translated', 'Prediction', 'Confidence', 'Timestamp'])
-    for row in rows:
-        writer.writerow(row)
+    si = StringIO()
+    cw = csv.writer(si)
+    cw.writerow(["ID", "Comment", "Translated", "Prediction", "Confidence", "Timestamp"])
+    cw.writerows(rows)
+    si.seek(0)
 
-    output.seek(0)
-    return send_file(io.BytesIO(output.read().encode()), download_name="toxicity_logs.csv", as_attachment=True)
+    return send_file(
+        StringIO(si.read()),
+        mimetype="text/csv",
+        download_name="toxicity_logs.csv",
+        as_attachment=True
+    )
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000)
+
+@app.route("/delete_all")
+@requires_auth
+def delete_all_logs():
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM toxicity_logs")
+    conn.commit()
+    conn.close()
+    return redirect("/logs")
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
