@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify, render_template_string, Response
 from dotenv import load_dotenv
 import mysql.connector
 import os
-from datetime import datetime
 from functools import wraps
 
 load_dotenv()
@@ -17,7 +16,6 @@ db = mysql.connector.connect(
     database=os.getenv("MYSQL_DATABASE"),
     port=int(os.getenv("MYSQL_PORT", 3306))
 )
-
 cursor = db.cursor()
 
 # Create table if not exists
@@ -29,14 +27,14 @@ def create_table():
             transliterated TEXT,
             prediction VARCHAR(50),
             confidence FLOAT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
     """)
     db.commit()
 
 create_table()
 
-# Basic Auth for admin logs view
+# Basic Auth for logs view
 def check_auth(username, password):
     return username == os.getenv("ADMIN_USER") and password == os.getenv("ADMIN_PASS")
 
@@ -69,7 +67,7 @@ def log_data():
 
     return jsonify({"status": "success"}), 200
 
-# Admin dashboard with pie chart
+# Admin dashboard
 @app.route('/logs')
 @requires_auth
 def view_logs():
@@ -104,7 +102,7 @@ def view_logs():
             </script>
             <table border="1" cellpadding="6" style="margin-top:20px; width:100%;">
                 <tr>
-                    <th>ID</th><th>Comment</th><th>Transliterated</th><th>Prediction</th><th>Confidence (%)</th><th>Timestamp</th>
+                    <th>ID</th><th>Comment</th><th>Translated Text</th><th>Prediction</th><th>Confidence (%)</th><th>Timestamp</th>
                 </tr>
                 {% for row in rows %}
                 <tr>
