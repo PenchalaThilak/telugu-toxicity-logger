@@ -27,7 +27,7 @@ def create_table():
             transliterated TEXT,
             prediction VARCHAR(50),
             confidence FLOAT,
-            timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     db.commit()
