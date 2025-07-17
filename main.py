@@ -1,26 +1,24 @@
 import os
-from flask import Flask, request, jsonify, render_template_string, Response
-from functools import wraps
+from flask import Flask, request, jsonify, Response
 import mysql.connector
 from datetime import datetime
-import csv
-from io import StringIO
+from dotenv import load_dotenv
+from functools import wraps
+
+load_dotenv()
 
 app = Flask(__name__)
 
-# Load MySQL and Admin credentials from environment variables
+# MySQL config from environment variables
 db_config = {
-    'host': os.environ.get("MYSQL_HOST"),
-    'user': os.environ.get("MYSQL_USER"),
-    'password': os.environ.get("MYSQL_PASSWORD"),
-    'database': os.environ.get("MYSQL_DATABASE"),
-    'port': int(os.environ.get("MYSQL_PORT", 3306))
+    'host': os.getenv("MYSQL_HOST"),
+    'port': int(os.getenv("MYSQL_PORT")),
+    'user': os.getenv("MYSQL_USER"),
+    'password': os.getenv("MYSQL_PASSWORD"),
+    'database': os.getenv("MYSQL_DATABASE")
 }
 
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "1234")
-
-# Create the logs table if it doesn't exist
+# Create table if it doesn't exist
 def create_table():
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor()
@@ -31,20 +29,24 @@ def create_table():
             translated TEXT,
             prediction VARCHAR(50),
             confidence FLOAT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp DATETIME
         )
     """)
     conn.commit()
+    cursor.close()
     conn.close()
 
 create_table()
 
-# Basic auth for admin logs
+# Basic auth for admin
 def check_auth(username, password):
-    return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
+    return username == os.getenv("ADMIN_USERNAME") and password == os.getenv("ADMIN_PASSWORD")
 
 def authenticate():
-    return Response('Login Required', 401, {'WWW-Authenticate': 'Basic realm="Login Required"'})
+    return Response(
+        'Could not verify your access.\n'
+        'You have to login with proper credentials', 401,
+        {'WWW-Authenticate': 'Basic realm="Login Required"'})
 
 def requires_auth(f):
     @wraps(f)
@@ -55,122 +57,60 @@ def requires_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-@app.route("/log", methods=["POST"])
-def log_data():
-    data = request.json
-    comment = data.get("comment", "")
-    translated = data.get("translated", "")
-    prediction = data.get("prediction", "")
-    confidence = float(data.get("confidence", 0))
+# Route to log comment
+@app.route('/log', methods=['POST'])
+def log_comment():
+    data = request.get_json()
+    comment = data.get('comment')
+    translated = data.get('translated')
+    prediction = data.get('prediction')
+    confidence = data.get('confidence')
 
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor()
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     cursor.execute("""
-        INSERT INTO toxicity_logs (comment, translated, prediction, confidence)
-        VALUES (%s, %s, %s, %s)
-    """, (comment, translated, prediction, confidence))
-    conn.commit()
-    conn.close()
-    return jsonify({"message": "Logged successfully"}), 200
+        INSERT INTO toxicity_logs (comment, translated, prediction, confidence, timestamp)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (comment, translated, prediction, confidence, timestamp))
 
-@app.route("/logs")
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return jsonify({'status': 'success'}), 200
+
+# Admin view of all logs
+@app.route('/logs', methods=['GET'])
 @requires_auth
-def show_logs():
+def view_logs():
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, comment, translated, prediction, confidence, timestamp FROM toxicity_logs")
+    cursor.execute("SELECT * FROM toxicity_logs")
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
-
-    # Pie chart data
-    toxic_count = sum(1 for row in rows if row[3].lower() == "toxic")
-    non_toxic_count = len(rows) - toxic_count
 
     html = """
-    <!DOCTYPE html>
     <html>
-    <head>
-        <title>Toxicity Logs</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    </head>
+    <head><title>Admin Log View</title></head>
     <body>
-        <h2>🧾 Toxicity Log Table</h2>
-        <table border="1" cellpadding="8">
-            <tr>
-                <th>ID</th>
-                <th>Comment</th>
-                <th>Translated</th>
-                <th>Prediction</th>
-                <th>Confidence (%)</th>
-                <th>Timestamp</th>
-                <th>Action</th>
-            </tr>
-            {% for row in rows %}
-            <tr>
-                <td>{{row[0]}}</td>
-                <td>{{row[1]}}</td>
-                <td>{{row[2]}}</td>
-                <td>{{row[3]}}</td>
-                <td>{{'%.2f'|format(row[4])}}</td>
-                <td>{{row[5]}}</td>
-                <td><form method="post" action="/delete/{{row[0]}}" style="display:inline;">
-                    <button type="submit">Delete</button>
-                </form></td>
-            </tr>
-            {% endfor %}
-        </table>
-        <br>
-        <a href="/download" target="_blank"><button>📥 Download CSV</button></a>
-
-        <h3>📊 Toxicity Pie Chart</h3>
-        <canvas id="toxicityChart" width="400" height="400"></canvas>
-        <script>
-            const ctx = document.getElementById('toxicityChart').getContext('2d');
-            new Chart(ctx, {
-                type: 'pie',
-                data: {
-                    labels: ['Toxic', 'Non-Toxic'],
-                    datasets: [{
-                        label: 'Comments',
-                        data: [{{ toxic }}, {{ non_toxic }}],
-                        backgroundColor: ['#FF5733', '#28B463']
-                    }]
-                }
-            });
-        </script>
-    </body>
-    </html>
+    <h2>Toxicity Logs</h2>
+    <table border='1'>
+        <tr>
+            <th>ID</th>
+            <th>Comment</th>
+            <th>Translated</th>
+            <th>Prediction</th>
+            <th>Confidence (%)</th>
+            <th>Timestamp</th>
+        </tr>
     """
-    return render_template_string(html, rows=rows, toxic=toxic_count, non_toxic=non_toxic_count)
-
-@app.route("/delete/<int:log_id>", methods=["POST"])
-@requires_auth
-def delete_log(log_id):
-    conn = mysql.connector.connect(**db_config)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM toxicity_logs WHERE id = %s", (log_id,))
-    conn.commit()
-    conn.close()
-    return "Deleted! <a href='/logs'>Go back</a>"
-
-@app.route("/download")
-@requires_auth
-def download_logs():
-    conn = mysql.connector.connect(**db_config)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, comment, translated, prediction, confidence, timestamp FROM toxicity_logs")
-    rows = cursor.fetchall()
-    conn.close()
-
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['ID', 'Comment', 'Translated Text', 'Prediction', 'Confidence (%)', 'Timestamp'])
     for row in rows:
-        writer.writerow(row)
+        html += "<tr>" + "".join(f"<td>{str(cell)}</td>" for cell in row) + "</tr>"
+    html += "</table></body></html>"
+    return html
 
-    output.seek(0)
-    return Response(output, mimetype="text/csv",
-                    headers={"Content-Disposition": "attachment;filename=toxicity_logs.csv"})
-
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=10000)
+if __name__ == '__main__':
+    app.run(debug=True)
